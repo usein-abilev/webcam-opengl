@@ -248,11 +248,6 @@ int main(void) {
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     assert(ioctl(fd_in, VIDIOC_STREAMON, &type) != -1);
 
-    // setup buffers
-    size_t output_buffer_size = CAM_WIDTH * CAM_HEIGHT * 3;
-    unsigned char *output_buffer = (unsigned char *)malloc(output_buffer_size); // rgb
-    unsigned char *rgba_buffer = malloc(CAM_WIDTH * CAM_HEIGHT * 4);
-
     // setup shaders
     GLuint shader_program = load_shaders("./shaders/vertex.glsl", "./shaders/ascii.frag");
     assert(shader_program != 0);
@@ -340,6 +335,10 @@ int main(void) {
     float delta_time = 0.0f;
     float last_time = 0.0f;
 
+    // setup RGBA buffers for camera frames and OpenGL pixels
+    static const size_t rgba_buffer_size = CAM_WIDTH * CAM_HEIGHT * 4;
+    unsigned char *rgba_buffer = malloc(rgba_buffer_size);
+
     while (!glfwWindowShouldClose(window)) {
         float current_time = (float)glfwGetTime();
         if (last_time == 0) {
@@ -392,11 +391,11 @@ int main(void) {
         // Ref: https://emersion.fr/blog/2018/wayland-rendering-loop/
         glfwSwapBuffers(window);
 
-        glReadPixels(0, 0, CAM_WIDTH, CAM_HEIGHT, GL_RGB, GL_UNSIGNED_BYTE, output_buffer);
+        glReadPixels(0, 0, CAM_WIDTH, CAM_HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, rgba_buffer);
 
-        flip_buffer_vertical(output_buffer, CAM_WIDTH, CAM_HEIGHT, 3); // rgb
+        flip_buffer_vertical(rgba_buffer, CAM_WIDTH, CAM_HEIGHT, 4); // rgba
 
-        if (write(fd_out, output_buffer, output_buffer_size) == -1) {
+        if (write(fd_out, rgba_buffer, rgba_buffer_size) == -1) {
             perror("Failed to write data to virtual cam");
             break;
         }
@@ -411,7 +410,7 @@ int main(void) {
     assert(ioctl(fd_in, VIDIOC_STREAMOFF, &type) != -1);
 
     free(app_context);
-    free(output_buffer);
+    // free(output_buffer);
     free(rgba_buffer);
     stbi_image_free(glyph_image_buffer);
     stbi_image_free(atlas_edges_buffer);
