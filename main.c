@@ -30,7 +30,9 @@ GLuint load_shaders(const char *vert_path, const char *frag_path);
 // AppContext stores parameters that meant to be passed into callbacks via glfwSetWindowUserPointer/glfwGetWindowUserPointer
 typedef struct {
     float zoom_level;
+    int rendering_mode;
     bool ctrl_pressed;
+    bool shader_enabled;
 } AppContext;
 
 typedef struct {
@@ -100,7 +102,7 @@ int readcam(const char *file, int width, int height, int bufcount, CamBuffer *bu
 
         if (buffers[i].start == MAP_FAILED) {
             perror("mmap failure");
-            exit(EXIT_FAILURE);
+            return -1;
         }
 
         ioctl(fd_in, VIDIOC_QBUF, &buf);
@@ -148,6 +150,30 @@ void flip_buffer_vertical(unsigned char *data, int width, int height, int channe
     free(temp_row);
 }
 
+GLuint create_opengl_texture(unsigned char *buffer, int width, int height) {
+    GLuint texture_id = 0;
+    glGenTextures(1, &texture_id);
+    if (!texture_id) {
+        fprintf(stderr, "create_opengl_texture(): failed to generate texture\n");
+        return 0;
+    }
+    glBindTexture(GL_TEXTURE_2D, texture_id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
+
+    GLenum gl_error = glGetError();
+    if (gl_error != GL_NO_ERROR) {
+        fprintf(stderr, "create_opengl_texture(): glTexImage2D error\n");
+        return 0;
+    }
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    return texture_id;
+}
+
 void init_vertex_buffers(GLuint *VAO, GLuint* VBO, GLuint* EBO) {
     float vertices[] = {
         1.0f, 1.0f, 0.0f, 1.0f, 1.0f,   // top right
@@ -183,6 +209,27 @@ void keyboard_callback(GLFWwindow* window, int key, int scancode, int action, in
             context->ctrl_pressed = false;
         }
     }
+
+    if (action == GLFW_PRESS) {
+        switch (key) {
+            case GLFW_KEY_R:
+            case GLFW_KEY_0:
+                context->rendering_mode = 0;
+                break;
+            case GLFW_KEY_1:
+                context->rendering_mode = 1;
+                break;
+            case GLFW_KEY_2:
+                context->rendering_mode = 2;
+                break;
+            case GLFW_KEY_3:
+                context->rendering_mode = 3;
+                break;
+            case GLFW_KEY_4:
+                context->rendering_mode = 4;
+                break;
+        }
+    }
 }
 
 void scroll_callback(GLFWwindow*window, double x, double y) {
@@ -196,7 +243,7 @@ void scroll_callback(GLFWwindow*window, double x, double y) {
     if (context->ctrl_pressed) {
         zoom_offset *= 2;
     }
-    if (context->zoom_level + zoom_offset > 0 && context->zoom_level + zoom_offset <= MAX_ZOOM_LEVEL) {
+    if (context->zoom_level + zoom_offset >= 0.1 && context->zoom_level + zoom_offset <= MAX_ZOOM_LEVEL) {
         context->zoom_level += zoom_offset;
     }
     printf("scroll event (offset: %f, zoom: %f)\n", zoom_offset, context->zoom_level);
@@ -226,6 +273,7 @@ int main(void) {
         exit(EXIT_FAILURE);
     }
     app_context->zoom_level = 1.0;
+    app_context->rendering_mode = 1;
 
     // the user pointer is needed to provide the access to our app context inside callbacks
     glfwSetWindowUserPointer(window, app_context);
@@ -244,7 +292,6 @@ int main(void) {
     int fd_out = writecam("/dev/video0", CAM_WIDTH, CAM_HEIGHT); // get access to virtual cam
     assert(fd_in != -1);
     assert(fd_out != -1);
-
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     assert(ioctl(fd_in, VIDIOC_STREAMON, &type) != -1);
 
@@ -265,39 +312,20 @@ int main(void) {
     glEnableVertexAttribArray(1);
 
     // setup main camera texture to be rendered
-    GLuint cam_texture;
-    {
-        glGenTextures(1, &cam_texture);
-        glBindTexture(GL_TEXTURE_2D, cam_texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, CAM_WIDTH, CAM_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    }
+    GLuint cam_texture = create_opengl_texture(NULL, CAM_WIDTH, CAM_HEIGHT);
 
-    int glyph_width, glyph_height, glyph_channels;
-    stbi_uc* glyph_image_buffer = stbi_load(
+    int atlas_width, atlas_height, atlas_channels;
+    stbi_uc* atlas_glyphs_buffer = stbi_load(
             "./assets/ascii.png", 
-            &glyph_width, &glyph_height, 
-            &glyph_channels, 0
+            &atlas_width, &atlas_height, 
+            &atlas_channels, 0
     );
-    if (!glyph_image_buffer) {
+    if (!atlas_glyphs_buffer) {
         fprintf(stderr, "error: cannot open glyph image\n");
         exit(EXIT_FAILURE);
     }
-    printf("glyph image loaded: (w: %i, h: %i, ch: %i)\n", glyph_width, glyph_height, glyph_channels);
-
-    GLuint glyph_texture;
-    {
-        // load glyph texture
-        glGenTextures(1, &glyph_texture);
-        glBindTexture(GL_TEXTURE_2D, glyph_texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, glyph_width, glyph_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, glyph_image_buffer); }
+    printf("atlas image loaded: (w: %i, h: %i, ch: %i)\n", atlas_width, atlas_height, atlas_channels);
+    GLuint atlas_texture = create_opengl_texture(atlas_glyphs_buffer, atlas_width, atlas_height);
 
     int atlas_edges_w, atlas_edges_h, atlas_edges_channels;
     stbi_uc* atlas_edges_buffer = stbi_load(
@@ -310,17 +338,7 @@ int main(void) {
         exit(EXIT_FAILURE);
     }
     printf("atlas edges image loaded: (w: %i, h: %i, ch: %i)\n", atlas_edges_w, atlas_edges_h, atlas_edges_channels);
-    GLuint atlas_edges_texture;
-    {
-        // load ascii glyph texture
-        glGenTextures(1, &atlas_edges_texture);
-        glBindTexture(GL_TEXTURE_2D, atlas_edges_texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, atlas_edges_w, atlas_edges_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, atlas_edges_buffer);
-    }
+    GLuint atlas_edges_texture = create_opengl_texture(atlas_edges_buffer, atlas_edges_w, atlas_edges_h);
 
     glUseProgram(shader_program);
     glUniform1i(glGetUniformLocation(shader_program, "cam_texture"), 0);
@@ -331,6 +349,7 @@ int main(void) {
     GLuint height_loc = glGetUniformLocation(shader_program, "height");
     GLuint time_loc = glGetUniformLocation(shader_program, "time");
     GLuint zoom_loc = glGetUniformLocation(shader_program, "zoom");
+    GLuint mode_loc = glGetUniformLocation(shader_program, "mode");
 
     float delta_time = 0.0f;
     float last_time = 0.0f;
@@ -364,18 +383,17 @@ int main(void) {
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, CAM_WIDTH, CAM_HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, rgba_buffer);
 
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, glyph_texture);
+        glBindTexture(GL_TEXTURE_2D, atlas_texture);
 
         glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, atlas_edges_texture);
-
-        // printf("captured frame size: %d (buf idx: %d), time: %f\n", buf.bytesused, buf.index, delta_time);
 
         // render
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
         glUseProgram(shader_program);
+
         glBindVertexArray(VAO);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 
@@ -383,6 +401,7 @@ int main(void) {
         glUniform1f(height_loc, CAM_HEIGHT);
         glUniform1f(time_loc, delta_time);
         glUniform1f(zoom_loc, app_context->zoom_level);
+        glUniform1ui(mode_loc, app_context->rendering_mode);
 
         glfwPollEvents();
 
@@ -391,7 +410,8 @@ int main(void) {
         // Ref: https://emersion.fr/blog/2018/wayland-rendering-loop/
         glfwSwapBuffers(window);
 
-        glReadPixels(0, 0, CAM_WIDTH, CAM_HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, rgba_buffer);
+        memset(rgba_buffer, 0, rgba_buffer_size);
+        glReadPixels(0, 0, CAM_WIDTH, CAM_HEIGHT, GL_RGB, GL_UNSIGNED_BYTE, rgba_buffer);
 
         flip_buffer_vertical(rgba_buffer, CAM_WIDTH, CAM_HEIGHT, 4); // rgba
 
@@ -409,12 +429,6 @@ int main(void) {
     type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     assert(ioctl(fd_in, VIDIOC_STREAMOFF, &type) != -1);
 
-    free(app_context);
-    // free(output_buffer);
-    free(rgba_buffer);
-    stbi_image_free(glyph_image_buffer);
-    stbi_image_free(atlas_edges_buffer);
-
     // unmap memory and close file descriptors
     for (unsigned int i = 0; i < fd_in_bufcount; i++) {
         assert(munmap(fd_buffers[i].start, fd_buffers[i].length) != -1);
@@ -423,8 +437,16 @@ int main(void) {
     if (fd_out > 0)
         close(fd_out);
 
+    free(app_context);
+    free(rgba_buffer);
+    stbi_image_free(atlas_glyphs_buffer);
+    stbi_image_free(atlas_edges_buffer);
+
     // delete OpenGL objects before terminating the context
     glDeleteTextures(1, &cam_texture);
+    glDeleteTextures(1, &atlas_texture);
+    glDeleteTextures(1, &atlas_edges_texture);
+
     glDeleteVertexArrays(1, &VAO);
     glDeleteBuffers(1, &VBO);
     glDeleteBuffers(1, &EBO);

@@ -41,7 +41,7 @@ read_failure:
     return NULL;
 }
 
-static GLint compile_shader_file(const char *path, GLenum type, GLuint *shader) {
+GLint compile_shader_file(const char *path, GLenum type, GLuint *shader) {
     const char *src = read_file(path);
     *shader = glCreateShader(type);
     glShaderSource(*shader, 1, &src, NULL);
