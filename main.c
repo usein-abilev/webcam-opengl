@@ -32,7 +32,6 @@ typedef struct {
     float zoom_level;
     int rendering_mode;
     bool ctrl_pressed;
-    bool shader_enabled;
 } AppContext;
 
 typedef struct {
@@ -413,7 +412,7 @@ int main(void) {
         memset(rgba_buffer, 0, rgba_buffer_size);
         glReadPixels(0, 0, CAM_WIDTH, CAM_HEIGHT, GL_RGB, GL_UNSIGNED_BYTE, rgba_buffer);
 
-        flip_buffer_vertical(rgba_buffer, CAM_WIDTH, CAM_HEIGHT, 4); // rgba
+        flip_buffer_vertical(rgba_buffer, CAM_WIDTH, CAM_HEIGHT, 3); // rgba
 
         if (write(fd_out, rgba_buffer, rgba_buffer_size) == -1) {
             perror("Failed to write data to virtual cam");
